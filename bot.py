@@ -11,22 +11,19 @@ import requests
 # ==========================================
 # BOT CONFIGURATION
 # ==========================================
-# Render ရဲ့ Environment Variables ထဲကနေ BOT_TOKEN ကို ယူပါမည်။
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-# သင့်ရဲ့ Admin ID ကို တိုက်ရိုက်ထည့်သွင်းထားပါသည်။
 ADMIN_ID = 6673230697 
 
-# Database URL
-DB_URL = "postgresql://postgres.oziuwtfvqalrndxrlhfu:5MsTXrMV6foC4FGS@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
+# Database URL (Port 5432 သို့ ပြင်ဆင်ထားပါသည်)
+DB_URL = "postgresql://postgres.oziuwtfvqalrndxrlhfu:5MsTXrMV6foC4FGS@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres"
 
-# Bot Token မထည့်ထားပါက Error ပြရန်
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN ကို Render Environment Variables ထဲမှာ ထည့်သွင်းပေးရန်လိုအပ်ပါသည်။")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ==========================================
-# FLASK KEEP-ALIVE SERVER (from 57921.jpg, 57922.jpg)
+# FLASK KEEP-ALIVE SERVER
 # ==========================================
 app = Flask(__name__)
 
@@ -39,10 +36,8 @@ def health():
     return "OK", 200
 
 def ping_self():
-    """Self-ping စနစ် - Render ရဲ့ sleep ကိုကာကွယ်ရန်"""
     url = os.environ.get("RENDER_EXTERNAL_URL")
     if not url:
-        # သင့်ရဲ့ Render URL အမှန်ကို ဒီနေရာမှာ ထည့်သွင်းနိုင်ပါတယ်
         url = "https://beta-no7j.onrender.com" 
         print(f"🔄 Using hardcoded URL: {url}")
         
@@ -86,8 +81,9 @@ def init_db():
 
 init_db()
 
-# User States (မှတ်သားရန်)
+# User States နှင့် Logged-in Sessions များကို မှတ်သားရန်
 user_states = {}
+logged_in_users = set()  # Login ဝင်ထားပြီးသော user_id များကို သိမ်းရန်
 
 CHANNELS = [
     "@candyhubass",
@@ -107,9 +103,12 @@ def start_command(message):
     markup.add(InlineKeyboardButton("Join Channel 1", url="https://t.me/candyhubass"))
     markup.add(InlineKeyboardButton("Join Channel 2", url="https://t.me/CandyHub_Ch"))
     markup.add(InlineKeyboardButton("Join Group", url="https://t.me/CandyHub_Chat"))
-    markup.add(InlineKeyboardButton("✅ Check", callback_data="check_join"))
+    markup.add(InlineKeyboardButton("✅ Check Join", callback_data="check_join"))
     
-    text = f"မင်္ဂလာပါ @{username} 🤍\nGame ဆော့ရန် အောက်ပါ gp များကို join ပေးပါနော်။"
+    text = (f"မင်္ဂလာပါ @{username} 🤍\n"
+            "Candy Hub Bot မှ ကြိုဆိုပါတယ်။\n"
+            "အောက်ပါ Channel/Group များကို Join ပြီးမှ ဆက်လုပ်ပါ။\n\n"
+            "အကောင့်ရှိပြီးသားဆိုပါက /login ဖြင့် ဝင်ရောက်နိုင်ပါသည်။")
     bot.send_message(user_id, text, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_join")
@@ -125,19 +124,37 @@ def check_join(call):
         
         if all_joined:
             bot.answer_callback_query(call.id, "✅ Confirm ဖြစ်ပါတယ်။")
-            bot.send_message(user_id, "အကောင့်ဖွင့်ရန် ကျေးဇူးပြု၍ သင့်ရဲ့ Email ကို ရိုက်ထည့်ပေးပါ:")
-            user_states[user_id] = {'step': 'waiting_email'}
+            markup = InlineKeyboardMarkup()
+            markup.add(
+                InlineKeyboardButton("📝 Register (အကောင့်သစ်ဖွင့်ရန်)", callback_data="action_register"),
+                InlineKeyboardButton("🔑 Login (အကောင့်ဝင်ရန်)", callback_data="action_login")
+            )
+            bot.send_message(user_id, "ကျေးဇူးပြု၍ အောက်ပါတို့မှ တစ်ခုကို ရွေးချယ်ပါ:", reply_markup=markup)
         else:
             bot.answer_callback_query(call.id, "❌ Group/Channel အားလုံးကို Join ရန်လိုအပ်ပါတယ်။", show_alert=True)
     except Exception as e:
         bot.answer_callback_query(call.id, "Error! Bot ကို Channel များတွင် Admin ပေးထားရန်လိုအပ်ပါသည်။", show_alert=True)
 
+@bot.callback_query_handler(func=lambda call: call.data in ["action_register", "action_login"])
+def choice_handler(call):
+    user_id = call.from_user.id
+    if call.data == "action_register":
+        bot.send_message(user_id, "အကောင့်ဖွင့်ရန် သင့်ရဲ့ Email ကို ရိုက်ထည့်ပေးပါ:")
+        user_states[user_id] = {'step': 'waiting_email'}
+    elif call.data == "action_login":
+        bot.send_message(user_id, "🔑 Login ဝင်ရန် သင့်အကောင့်၏ Email ကို ရိုက်ထည့်ပေးပါ:")
+        user_states[user_id] = {'step': 'waiting_login_email'}
+    bot.answer_callback_query(call.id)
+
+# ------------------------------------------
+# REGISTER FLOW
+# ------------------------------------------
 @bot.message_handler(func=lambda m: user_states.get(m.from_user.id, {}).get('step') == 'waiting_email')
 def get_email(message):
     user_id = message.from_user.id
     user_states[user_id]['email'] = message.text
     user_states[user_id]['step'] = 'waiting_password'
-    bot.send_message(user_id, "ကျေးဇူးပြု၍ Password (စကားဝှက်) ကို ရိုက်ထည့်ပေးပါ:")
+    bot.send_message(user_id, "ကျေးဇူးပြု၍ Password (စကားဝှက်) အသစ်ကို ရိုက်ထည့်ပေးပါ:")
 
 @bot.message_handler(func=lambda m: user_states.get(m.from_user.id, {}).get('step') == 'waiting_password')
 def get_password(message):
@@ -165,9 +182,10 @@ def confirm_account(call):
             cursor.execute("INSERT INTO users (user_id, username, email, password) VALUES (%s, %s, %s, %s)", 
                            (user_id, username, email, password))
             conn.commit()
-            bot.send_message(user_id, "✅ အကောင့်ဖွင့်ခြင်း အောင်မြင်ပါသည်။\n/buy ဟုရိုက်၍ Mining Machine ဝယ်ယူနိုင်ပါသည်။")
+            logged_in_users.add(user_id)
+            bot.send_message(user_id, "✅ အကောင့်ဖွင့်ခြင်းနှင့် Login ဝင်ပြီးဖြစ်ပါသည်။\n/buy ဟုရိုက်၍ Mining Machine ဝယ်ယူနိုင်ပါပြီ။")
         except Exception as e:
-            bot.send_message(user_id, "❌ အကောင့်ဖွင့်ရာတွင် အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။ Email တူနေနိုင်ပါသည်။")
+            bot.send_message(user_id, "❌ အကောင့်ဖွင့်ရာတွင် အမှားအယွင်းဖြစ်ပေါ်ခဲ့ပါသည်။ Email တူနေနိုင်ပါသည် (သို့) အကောင့်ရှိပြီးသားဖြစ်နေပါသည်။")
         finally:
             cursor.close()
             conn.close()
@@ -177,8 +195,75 @@ def confirm_account(call):
         user_states.pop(user_id, None)
         bot.send_message(user_id, "❌ အကောင့်ဖွင့်ခြင်းကို ပယ်ဖျက်လိုက်ပါသည်။ ပြန်စရန် /start ကိုနှိပ်ပါ။")
 
+# ------------------------------------------
+# LOGIN FLOW
+# ------------------------------------------
+@bot.message_handler(commands=['login'])
+def login_command(message):
+    user_id = message.from_user.id
+    bot.send_message(user_id, "🔑 Login ဝင်ရန် သင့်ရဲ့ **Email** ကို ရိုက်ထည့်ပေးပါ:")
+    user_states[user_id] = {'step': 'waiting_login_email'}
+
+@bot.message_handler(func=lambda m: user_states.get(m.from_user.id, {}).get('step') == 'waiting_login_email')
+def process_login_email(message):
+    user_id = message.from_user.id
+    user_states[user_id]['login_email'] = message.text
+    user_states[user_id]['step'] = 'waiting_login_password'
+    bot.send_message(user_id, "🔑 ကျေးဇူးပြု၍ သင့်အကောင့်၏ **Password** ကို ရိုက်ထည့်ပေးပါ:")
+
+@bot.message_handler(func=lambda m: user_states.get(m.from_user.id, {}).get('step') == 'waiting_login_password')
+def process_login_password(message):
+    user_id = message.from_user.id
+    email = user_states[user_id]['login_email']
+    password = message.text
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        # Database ထဲမှ Email နှင့် Password တိုက်စစ်ခြင်း
+        cursor.execute("SELECT user_id, password FROM users WHERE email = %s", (email,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row and row[1] == password:
+            db_user_id = row[0]
+            # အကယ်၍ Telegram ID က Database ထဲမှာ အခြားသူနဲ့ ချိတ်နေရင် update လုပ်တာဖြစ်စေ၊ လက်ရှိ user_id နဲ့ တွဲတာဖြစ်စေ စစ်နိုင်ပါတယ်။ 
+            # ဒီနေရာမှာ user_id ကို update လုပ်ပေးပါမယ် (Telegram ဖြင့် ဝင်လာသူအတွက်)
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET user_id = %s WHERE email = %s", (user_id, email))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logged_in_users.add(user_id)
+            bot.send_message(user_id, "✅ Login အောင်မြင်ပါသည်။ ယခုဂိမ်းကို ဆက်လက်ကစားနိုင်ပါပြီ။ /buy သို့မဟုတ် /profile ကို အသုံးပြုပါ။")
+        else:
+            bot.send_message(user_id, "❌ Email သို့မဟုတ် Password မှားယွင်းနေပါသည်။ /login ဖြင့် ပြန်လည်ကြိုးစားပါ။")
+    except Exception as e:
+        bot.send_message(user_id, f"❌ Error ဖြစ်ပေါ်သည်: {e}")
+    finally:
+        user_states.pop(user_id, None)
+
+@bot.message_handler(commands=['logout'])
+def logout_command(message):
+    user_id = message.from_user.id
+    if user_id in logged_in_users:
+        logged_in_users.remove(user_id)
+        bot.send_message(user_id, "✅ အကောင့်မှ ထွက်လိုက်ပါပြီ (Logouted)။ ပြန်ဝင်ရန် /login ကိုနှိပ်ပါ။")
+    else:
+        bot.send_message(user_id, "⚠️ သင်သည် Login ဝင်ထားခြင်း မရှိသေးပါ။")
+
+# ==========================================
+# MINING & PROFILE COMMANDS (Login လိုအပ်သည်)
+# ==========================================
 @bot.message_handler(commands=['buy'])
 def buy_command(message):
+    user_id = message.from_user.id
+    if user_id not in logged_in_users:
+        bot.send_message(user_id, "⚠️ ကျေးဇူးပြု၍ ပထမဦးစွာ /login ဖြင့် အကောင့်ဝင်ပေးပါရန်။")
+        return
+
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
         InlineKeyboardButton("Level 1 (1hr) - 10000 chcoin [0.0001/sec]", callback_data="buy_1"),
@@ -268,6 +353,10 @@ def admin_payment_action(call):
 @bot.message_handler(commands=['profile'])
 def profile_command(message):
     user_id = message.from_user.id
+    if user_id not in logged_in_users:
+        bot.send_message(user_id, "⚠️ ကျေးဇူးပြု၍ ပထမဦးစွာ /login ဖြင့် အကောင့်ဝင်ပေးပါရန်။")
+        return
+
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT username, email, password, coin, machine_level, mining_rate FROM users WHERE user_id = %s", (user_id,))
@@ -285,11 +374,15 @@ def profile_command(message):
                f"Mining Rate: {rate} per sec"
         bot.send_message(user_id, text)
     else:
-        bot.send_message(user_id, "သင့်အကောင့်ကို ရှာမတွေ့ပါ။ /start ကိုနှိပ်၍ အကောင့်ဖွင့်ပါ။")
+        bot.send_message(user_id, "သင့်အကောင့်အချက်အလက် ရှာမတွေ့ပါ။ /start ဖြင့် အကောင့်ပြန်ဆောက်ပါ သို့မဟုတ် /login ဝင်ပါ။")
 
 @bot.message_handler(commands=['update'])
 def update_command(message):
     user_id = message.from_user.id
+    if user_id not in logged_in_users:
+        bot.send_message(user_id, "⚠️ ကျေးဇူးပြု၍ ပထမဦးစွာ /login ဖြင့် အကောင့်ဝင်ပေးပါရန်။")
+        return
+
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT machine_level, mining_rate, coin FROM users WHERE user_id = %s", (user_id,))
@@ -302,7 +395,6 @@ def update_command(message):
         
     level, rate, coin = row
     update_cost = 0.001
-    
     new_rate = rate * 2 
     
     cursor.execute("UPDATE users SET mining_rate = %s, coin = coin - %s WHERE user_id = %s", (new_rate, update_cost, user_id))
@@ -311,6 +403,9 @@ def update_command(message):
     
     bot.send_message(user_id, f"✅ Update လုပ်ခြင်းအောင်မြင်ပါသည်။\nကုန်ကျစရိတ်: {update_cost} chcoin\nယခု Mining Rate: {new_rate:.6f} per sec")
 
+# ==========================================
+# ADMIN COMMANDS
+# ==========================================
 @bot.message_handler(commands=['broadcast'])
 def broadcast(message):
     if message.from_user.id != ADMIN_ID:
@@ -380,7 +475,7 @@ def set_coin(message):
         bot.send_message(ADMIN_ID, "Format မှားယွင်းနေပါသည်။ (ဥပမာ - /setcoin a@gmail.com 100)")
 
 # ==========================================
-# MAIN EXECUTION (from 57923.jpg, 57924.jpg)
+# MAIN EXECUTION
 # ==========================================
 if __name__ == "__main__":
     print("=" * 50)
