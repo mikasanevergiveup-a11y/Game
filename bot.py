@@ -8,7 +8,7 @@ TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 DATABASE_URL = "postgresql://postgres.oziuwtfvqalrndxrlhfu:5MsTXrMV6foC4FGS@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres"
 
 # ⚠️ သင့်၏ ADMIN ID ကို အတိအကျ ထည့်ပါ
-ADMIN_ID = 123456789 
+ADMIN_ID = 6673230697 
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
