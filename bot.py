@@ -3,8 +3,12 @@ import telebot
 import psycopg2
 from flask import Flask
 
+# Bot Token ကို ဤနေရာတွင် ထည့်ပါ
 TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-DATABASE_URL = "postgresql://postgres.oziuwtfvqalrndxrlhfu:5MsTXrMV6foC4FGS@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
+DATABASE_URL = "postgresql://postgres.oziuwtfvqalrndxrlhfu:5MsTXrMV6foC4FGS@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres"
+
+# ⚠️ ဤနေရာတွင် သင်၏ ADMIN ID ကို အတိအကျ ထည့်ပါ (ဥပမာ - 123456789)
+ADMIN_ID = 6673230697 
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
@@ -75,7 +79,39 @@ def handle_auth_mode(call):
     action_text = "အကောင့်သစ်ဖွင့်ရန်" if mode == "signup" else "အကောင့်ဝင်ရန်"
     bot.send_message(user_id, f"{action_text} သင့်ရဲ့ Email ကို ရိုက်ထည့်ပေးပါ:")
 
-@bot.message_handler(func=lambda message: message.from_user.id in user_states)
+# ပုံ(Screenshot) လက်ခံရန် သီးသန့် Handler
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    user_id = message.from_user.id
+    state_data = user_states.get(user_id)
+    
+    if state_data and state_data.get('step') == 'waiting_payment_proof':
+        level = state_data.get('level')
+        # အကောင်းဆုံး Resolution ရှိတဲ့ ပုံကို ယူမည်
+        photo_id = message.photo[-1].file_id 
+        username = message.from_user.username or "User"
+        
+        # User ကို အကြောင်းကြားခြင်း
+        bot.send_message(user_id, "✅ ငွေလွှဲပြေစာ (Screenshot) ပေးပို့မှု အောင်မြင်ပါသည်။ Admin အတည်ပြုချက်ကို စောင့်ဆိုင်းပေးပါ။")
+        
+        # Admin ဆီသို့ ပုံပို့ခြင်း
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(
+            telebot.types.InlineKeyboardButton("✅ Confirm", callback_data=f"adm_conf_{user_id}_{level}"),
+            telebot.types.InlineKeyboardButton("❌ Decline", callback_data=f"adm_decl_{user_id}")
+        )
+        caption = f"🧾 **New Machine Request**\n\n👤 User: @{username} (ID: `{user_id}`)\n🎮 Requested Level: {level}"
+        
+        try:
+            bot.send_photo(ADMIN_ID, photo_id, caption=caption, parse_mode="Markdown", reply_markup=markup)
+        except Exception as e:
+            bot.send_message(user_id, "⚠️ Admin ထံသို့ ပေးပို့ရာတွင် အမှားအယွင်းရှိနေပါသည်။ (Admin ID မှားနေနိုင်ပါသည်)")
+            print(f"Error sending to admin: {e}")
+            
+        user_states.pop(user_id, None)
+
+# စာသား(Text) များ လက်ခံရန် Handler
+@bot.message_handler(content_types=['text'], func=lambda message: message.from_user.id in user_states)
 def handle_user_input(message):
     user_id = message.from_user.id
     state_data = user_states[user_id]
@@ -105,7 +141,6 @@ def handle_user_input(message):
                 reply_markup=markup
             )
         else:
-            # Login စစ်ဆေးခြင်း
             try:
                 conn = get_db_connection()
                 cursor = conn.cursor()
@@ -140,8 +175,8 @@ def confirm_signup(call):
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO users (user_id, username, email, password, coins, mining_level) 
-                VALUES (%s, %s, %s, %s, 0, 0)
+                INSERT INTO users (user_id, username, email, password, coins, mining_level, machine_status) 
+                VALUES (%s, %s, %s, %s, 0, 0, 'None')
                 ON CONFLICT (user_id) 
                 DO UPDATE SET email = EXCLUDED.email, password = EXCLUDED.password, username = EXCLUDED.username
             """, (user_id, username, email, password))
@@ -201,6 +236,32 @@ def payment_prompt_handler(call):
         user_states.pop(user_id, None)
         bot.send_message(user_id, "ဝယ်ယူမှုကို ပယ်ဖျက်လိုက်ပါသည်။")
 
+# Admin မှ Confirm (သို့) Decline လုပ်ခြင်းကို လက်ခံမည့် အပိုင်း
+@bot.callback_query_handler(func=lambda call: call.data.startswith("adm_conf_") or call.data.startswith("adm_decl_"))
+def admin_verification_handler(call):
+    data = call.data.split('_')
+    action = data[1]
+    target_user_id = int(data[2])
+    
+    if action == "conf":
+        level = int(data[3])
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET mining_level = %s, machine_status = 'Active' WHERE user_id = %s", (level, target_user_id))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            bot.send_message(target_user_id, f"🎉 Admin မှ သင့်ငွေလွှဲမှုကို အတည်ပြုလိုက်ပါသည်။ Level {level} Mining Machine စတင်အလုပ်လုပ်နေပါပြီ။ /profile တွင်စစ်ဆေးပါ။")
+            bot.edit_message_caption("✅ **အတည်ပြုပြီးပါပြီ (Confirmed)**", chat_id=call.message.chat.id, message_id=call.message.message_id)
+        except Exception as e:
+            bot.send_message(call.message.chat.id, f"DB Error: {e}")
+            
+    elif action == "decl":
+        bot.send_message(target_user_id, "❌ သင့်ငွေလွှဲမှုကို Admin မှ ငြင်းပယ်လိုက်ပါသည်။ ကျေးဇူးပြု၍ အချက်အလက်များ မှန်ကန်စွာ ပြန်လည်ပေးပို့ပါ။")
+        bot.edit_message_caption("❌ **ငြင်းပယ်ပြီးပါပြီ (Declined)**", chat_id=call.message.chat.id, message_id=call.message.message_id)
+
 @bot.message_handler(commands=['profile'])
 def show_profile(message):
     user_id = message.from_user.id
@@ -242,3 +303,4 @@ if __name__ == "__main__":
     bot_thread.start()
     
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
