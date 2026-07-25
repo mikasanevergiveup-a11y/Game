@@ -7,8 +7,8 @@ from flask import Flask
 TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 DATABASE_URL = "postgresql://postgres.oziuwtfvqalrndxrlhfu:5MsTXrMV6foC4FGS@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres"
 
-# ⚠️ ဤနေရာတွင် သင်၏ ADMIN ID ကို အတိအကျ ထည့်ပါ (ဥပမာ - 123456789)
-ADMIN_ID = 6673230697 
+# ⚠️ သင့်၏ ADMIN ID ကို အတိအကျ ထည့်ပါ
+ADMIN_ID = 123456789 
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
@@ -27,15 +27,19 @@ def init_db():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        # Database Schema အသစ် (Machine Count နှင့် Live Mining အတွက်)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
                 username TEXT,
                 email TEXT,
                 password TEXT,
-                coins REAL DEFAULT 0,
+                coins DOUBLE PRECISION DEFAULT 0.0,
                 mining_level INT DEFAULT 0,
-                machine_status TEXT DEFAULT 'None'
+                machine_count INT DEFAULT 0,
+                machine_status TEXT DEFAULT 'None',
+                mining_rate DOUBLE PRECISION DEFAULT 0.0,
+                last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         conn.commit()
@@ -65,8 +69,8 @@ def check_join_callback(call):
     user_id = call.from_user.id
     markup = telebot.types.InlineKeyboardMarkup()
     markup.add(
-        telebot.types.InlineKeyboardButton("📝 Sign up (အကောင့်သစ်ဖွင့်ရန်)", callback_data="auth_signup"),
-        telebot.types.InlineKeyboardButton("🔑 Log in (အကောင့်ဝင်ရန်)", callback_data="auth_login")
+        telebot.types.InlineKeyboardButton("📝 Sign up", callback_data="auth_signup"),
+        telebot.types.InlineKeyboardButton("🔑 Log in", callback_data="auth_login")
     )
     bot.send_message(user_id, "ကျေးဇူးပြု၍ အောက်ပါတို့မှ တစ်ခုကို ရွေးချယ်ပါ:", reply_markup=markup)
 
@@ -79,7 +83,6 @@ def handle_auth_mode(call):
     action_text = "အကောင့်သစ်ဖွင့်ရန်" if mode == "signup" else "အကောင့်ဝင်ရန်"
     bot.send_message(user_id, f"{action_text} သင့်ရဲ့ Email ကို ရိုက်ထည့်ပေးပါ:")
 
-# ပုံ(Screenshot) လက်ခံရန် သီးသန့် Handler
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     user_id = message.from_user.id
@@ -87,14 +90,11 @@ def handle_photo(message):
     
     if state_data and state_data.get('step') == 'waiting_payment_proof':
         level = state_data.get('level')
-        # အကောင်းဆုံး Resolution ရှိတဲ့ ပုံကို ယူမည်
         photo_id = message.photo[-1].file_id 
         username = message.from_user.username or "User"
         
-        # User ကို အကြောင်းကြားခြင်း
         bot.send_message(user_id, "✅ ငွေလွှဲပြေစာ (Screenshot) ပေးပို့မှု အောင်မြင်ပါသည်။ Admin အတည်ပြုချက်ကို စောင့်ဆိုင်းပေးပါ။")
         
-        # Admin ဆီသို့ ပုံပို့ခြင်း
         markup = telebot.types.InlineKeyboardMarkup()
         markup.add(
             telebot.types.InlineKeyboardButton("✅ Confirm", callback_data=f"adm_conf_{user_id}_{level}"),
@@ -105,12 +105,10 @@ def handle_photo(message):
         try:
             bot.send_photo(ADMIN_ID, photo_id, caption=caption, parse_mode="Markdown", reply_markup=markup)
         except Exception as e:
-            bot.send_message(user_id, "⚠️ Admin ထံသို့ ပေးပို့ရာတွင် အမှားအယွင်းရှိနေပါသည်။ (Admin ID မှားနေနိုင်ပါသည်)")
-            print(f"Error sending to admin: {e}")
+            bot.send_message(user_id, "⚠️ Admin ထံသို့ ပေးပို့ရာတွင် အမှားအယွင်းရှိနေပါသည်။ (Admin ID စစ်ဆေးပါ)")
             
         user_states.pop(user_id, None)
 
-# စာသား(Text) များ လက်ခံရန် Handler
 @bot.message_handler(content_types=['text'], func=lambda message: message.from_user.id in user_states)
 def handle_user_input(message):
     user_id = message.from_user.id
@@ -150,7 +148,7 @@ def handle_user_input(message):
                 conn.close()
                 
                 if row and row[0] == password:
-                    bot.send_message(user_id, "✅ Log in ဝင်ရောက်ခြင်း အောင်မြင်ပါသည်။\n/buy ဟု ရိုက်၍ Mining Machine ဝယ်ယူနိုင်ပါသည်။")
+                    bot.send_message(user_id, "✅ Log in ဝင်ရောက်ခြင်း အောင်မြင်ပါသည်။\n/profile ဟုရိုက်၍ စစ်ဆေးနိုင်ပါသည်။")
                 else:
                     bot.send_message(user_id, "❌ Email သို့မဟုတ် Password အမှားအယွင်းရှိနေပါသည်။ /start ဖြင့် ပြန်လည်ကြိုးစားပါ။")
             except Exception as e:
@@ -162,7 +160,6 @@ def handle_user_input(message):
 def confirm_signup(call):
     user_id = call.from_user.id
     if user_id not in user_states:
-        bot.send_message(user_id, "အချိန်ကုန်သွားပါပြီ။ /start ဖြင့် အစမှပြန်စပါ။")
         return
         
     if call.data == "signup_yes":
@@ -175,34 +172,34 @@ def confirm_signup(call):
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO users (user_id, username, email, password, coins, mining_level, machine_status) 
-                VALUES (%s, %s, %s, %s, 0, 0, 'None')
+                INSERT INTO users (user_id, username, email, password, coins, mining_level, machine_count, machine_status, mining_rate) 
+                VALUES (%s, %s, %s, %s, 0.0, 0, 0, 'None', 0.0)
                 ON CONFLICT (user_id) 
                 DO UPDATE SET email = EXCLUDED.email, password = EXCLUDED.password, username = EXCLUDED.username
             """, (user_id, username, email, password))
             conn.commit()
             cursor.close()
             conn.close()
-            bot.send_message(user_id, "✅ အကောင့်ဖွင့်ခြင်း (Sign up) အောင်မြင်ပါသည်။\nMining Machine ဝယ်ယူရန် /buy ဟု ရိုက်ပါ။")
+            bot.send_message(user_id, "✅ အကောင့်ဖွင့်ခြင်း အောင်မြင်ပါသည်။\n/buy ဟု ရိုက်၍ Mining Machine ဝယ်ယူပါ။")
         except Exception as e:
-            bot.send_message(user_id, f"❌ အမှားအယွင်းဖြစ်ပေါ်ခဲ့သည်: {e}")
+            bot.send_message(user_id, f"❌ DB Error: {e}")
         finally:
             user_states.pop(user_id, None)
     else:
         user_states.pop(user_id, None)
-        bot.send_message(user_id, "❌ အကောင့်ဖွင့်ခြင်းကို ပယ်ဖျက်လိုက်ပါသည်။ ပြန်စရန် /start ကိုနှိပ်ပါ။")
+        bot.send_message(user_id, "❌ ပယ်ဖျက်လိုက်ပါသည်။")
 
 @bot.message_handler(commands=['buy'])
 def buy_machine(message):
     user_id = message.from_user.id
     markup = telebot.types.InlineKeyboardMarkup()
-    markup.add(telebot.types.InlineKeyboardButton("Level 1 (1hr) - 10000 coin", callback_data="buy_lvl1"))
-    markup.add(telebot.types.InlineKeyboardButton("Level 2 (3hr) - 15000 coin", callback_data="buy_lvl2"))
-    markup.add(telebot.types.InlineKeyboardButton("Level 3 (5hr) - 30000 coin", callback_data="buy_lvl3"))
-    markup.add(telebot.types.InlineKeyboardButton("Level 4 (10hr) - 40000 coin", callback_data="buy_lvl4"))
-    markup.add(telebot.types.InlineKeyboardButton("Level 5 (24hr) - 50000 coin", callback_data="buy_lvl5"))
+    markup.add(telebot.types.InlineKeyboardButton("Level 1 (10000 coin)", callback_data="buy_lvl1"))
+    markup.add(telebot.types.InlineKeyboardButton("Level 2 (15000 coin)", callback_data="buy_lvl2"))
+    markup.add(telebot.types.InlineKeyboardButton("Level 3 (30000 coin)", callback_data="buy_lvl3"))
+    markup.add(telebot.types.InlineKeyboardButton("Level 4 (40000 coin)", callback_data="buy_lvl4"))
+    markup.add(telebot.types.InlineKeyboardButton("Level 5 (50000 coin)", callback_data="buy_lvl5"))
     
-    bot.send_message(user_id, "Mining machine ရွေးချယ်ပါ:", reply_markup=markup)
+    bot.send_message(user_id, "ဝယ်ယူမည့် Mining Machine ရွေးချယ်ပါ:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy_lvl"))
 def process_buy_level(call):
@@ -212,11 +209,7 @@ def process_buy_level(call):
     costs = {"1": 10000, "2": 15000, "3": 30000, "4": 40000, "5": 50000}
     cost = costs.get(level, 0)
     
-    text = (
-        f"Payment လုပ်ရန်:\n"
-        f"Email: adm@adm.com သို့ candyhub ထဲတွင် coin {cost} လွှဲပေးပါ။\n\n"
-        f"ငွေလွှဲပြီးပါက ပုံ (Screenshot) ပို့ပေးရန် Yes ကိုနှိပ်ပါ၊ မပို့လိုလျှင် No ကိုနှိပ်ပါ။"
-    )
+    text = f"Email: adm@adm.com သို့ coin {cost} လွှဲပေးပါ။\n\nငွေလွှဲပြီးပါက ပုံပို့ရန် Yes ကိုနှိပ်ပါ။"
     
     user_states[user_id] = {'step': 'waiting_payment_proof', 'level': level}
     
@@ -231,12 +224,12 @@ def process_buy_level(call):
 def payment_prompt_handler(call):
     user_id = call.from_user.id
     if call.data == "pay_yes":
-        bot.send_message(user_id, "ကျေးဇူးပြု၍ ငွေလွှဲထားသော ပုံ (Screenshot) ကို ပို့ပေးပါ။")
+        bot.send_message(user_id, "ငွေလွှဲထားသော ပုံ (Screenshot) ကို ပို့ပေးပါ။")
     else:
         user_states.pop(user_id, None)
-        bot.send_message(user_id, "ဝယ်ယူမှုကို ပယ်ဖျက်လိုက်ပါသည်။")
+        bot.send_message(user_id, "ပယ်ဖျက်လိုက်ပါသည်။")
 
-# Admin မှ Confirm (သို့) Decline လုပ်ခြင်းကို လက်ခံမည့် အပိုင်း
+# Admin Confirm လုပ်ခြင်း (Mining Rate နှင့် Machine Count တိုးပေးမည်)
 @bot.callback_query_handler(func=lambda call: call.data.startswith("adm_conf_") or call.data.startswith("adm_decl_"))
 def admin_verification_handler(call):
     data = call.data.split('_')
@@ -245,22 +238,35 @@ def admin_verification_handler(call):
     
     if action == "conf":
         level = int(data[3])
+        # Level အလိုက် 1 စက္ကန့်လျှင် တိုးမည့် Coin ပမာဏ (0.00001 ကစပြီး)
+        mining_rates = {1: 0.00001, 2: 0.00002, 3: 0.00005, 4: 0.0001, 5: 0.0002}
+        rate_to_add = mining_rates.get(level, 0.00001)
+        
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
-            cursor.execute("UPDATE users SET mining_level = %s, machine_status = 'Active' WHERE user_id = %s", (level, target_user_id))
+            # Machine အရေအတွက် 1 ခု တိုးပေးပြီး၊ Mining Rate ကိုလည်း ပေါင်းထည့်ပေးပါမည်
+            cursor.execute("""
+                UPDATE users 
+                SET mining_level = %s, 
+                    machine_status = 'Active', 
+                    machine_count = machine_count + 1,
+                    mining_rate = mining_rate + %s,
+                    last_update = CURRENT_TIMESTAMP
+                WHERE user_id = %s
+            """, (level, rate_to_add, target_user_id))
             conn.commit()
             cursor.close()
             conn.close()
             
-            bot.send_message(target_user_id, f"🎉 Admin မှ သင့်ငွေလွှဲမှုကို အတည်ပြုလိုက်ပါသည်။ Level {level} Mining Machine စတင်အလုပ်လုပ်နေပါပြီ။ /profile တွင်စစ်ဆေးပါ။")
-            bot.edit_message_caption("✅ **အတည်ပြုပြီးပါပြီ (Confirmed)**", chat_id=call.message.chat.id, message_id=call.message.message_id)
+            bot.send_message(target_user_id, f"🎉 Admin မှ အတည်ပြုလိုက်ပါသည်။ Level {level} Machine စတင်အလုပ်လုပ်နေပါပြီ။ /profile တွင်စစ်ဆေးပါ။")
+            bot.edit_message_caption("✅ **အတည်ပြုပြီးပါပြီ**", chat_id=call.message.chat.id, message_id=call.message.message_id)
         except Exception as e:
             bot.send_message(call.message.chat.id, f"DB Error: {e}")
             
     elif action == "decl":
-        bot.send_message(target_user_id, "❌ သင့်ငွေလွှဲမှုကို Admin မှ ငြင်းပယ်လိုက်ပါသည်။ ကျေးဇူးပြု၍ အချက်အလက်များ မှန်ကန်စွာ ပြန်လည်ပေးပို့ပါ။")
-        bot.edit_message_caption("❌ **ငြင်းပယ်ပြီးပါပြီ (Declined)**", chat_id=call.message.chat.id, message_id=call.message.message_id)
+        bot.send_message(target_user_id, "❌ သင့်ငွေလွှဲမှုကို Admin မှ ငြင်းပယ်လိုက်ပါသည်။")
+        bot.edit_message_caption("❌ **ငြင်းပယ်ပြီးပါပြီ**", chat_id=call.message.chat.id, message_id=call.message.message_id)
 
 @bot.message_handler(commands=['profile'])
 def show_profile(message):
@@ -268,20 +274,31 @@ def show_profile(message):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT username, email, coins, mining_level, machine_status FROM users WHERE user_id = %s", (user_id,))
+        
+        # 1. အချိန်နဲ့အမျှ ရရှိလာတဲ့ Coin များကို အရင်ဆုံး တွက်ချက်ပေါင်းထည့်မည် (Live Mining Calculation)
+        cursor.execute("""
+            UPDATE users 
+            SET coins = coins + (EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - last_update)) * mining_rate),
+                last_update = CURRENT_TIMESTAMP
+            WHERE user_id = %s AND machine_status = 'Active'
+        """, (user_id,))
+        conn.commit()
+        
+        # 2. Update ဖြစ်သွားသော အချက်အလက်များကို ပြန်ယူမည်
+        cursor.execute("SELECT username, email, coins, mining_level, machine_count, machine_status FROM users WHERE user_id = %s", (user_id,))
         row = cursor.fetchone()
         cursor.close()
         conn.close()
         
         if row:
-            username, email, coins, mining_level, status = row
+            username, email, coins, mining_level, machine_count, status = row
             text = (
                 f"👤 **User Profile**\n\n"
                 f"▪️ Username: @{username}\n"
                 f"▪️ Email: {email}\n"
-                f"▪️ Coins: {coins}\n"
-                f"▪️ Mining Level: {mining_level}\n"
-                f"▪️ Status: {status}"
+                f"▪️ 💰 Live Coins: {coins:.5f}\n"  # 0.00001 အထိ ပြသရန် .5f အသုံးပြုထားသည်
+                f"▪️ 🛠 Mining Machines: {machine_count} (Level {mining_level})\n"
+                f"▪️ ⚡ Status: {status}"
             )
             bot.send_message(user_id, text, parse_mode="Markdown")
         else:
@@ -303,4 +320,3 @@ if __name__ == "__main__":
     bot_thread.start()
     
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
