@@ -3,11 +3,8 @@ import telebot
 import psycopg2
 from flask import Flask
 
-# Bot Token ကို ဤနေရာတွင် ထည့်ပါ (သို့မဟုတ် Render Environment Variables တွင် ထည့်နိုင်သည်)
 TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-
-# ပေးထားသော Database URL (Supabase Port 5432 သို့ အလိုအလျောက် ချိန်ညှိပေးသည်)
-DATABASE_URL = "postgresql://postgres.oziuwtfvqalrndxrlhfu:5MsTXrMV6foC4FGS@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres"
+DATABASE_URL = "postgresql://postgres.oziuwtfvqalrndxrlhfu:5MsTXrMV6foC4FGS@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
@@ -62,57 +59,81 @@ def send_welcome(message):
 @bot.callback_query_handler(func=lambda call: call.data == "check_join")
 def check_join_callback(call):
     user_id = call.from_user.id
-    user_states[user_id] = {'step': 'waiting_email'}
-    bot.send_message(user_id, "ကျေးဇူးပြု၍ အကောင့်ဖွင့်ရန် Email ကို ရိုက်ထည့်ပေးပါ:")
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.add(
+        telebot.types.InlineKeyboardButton("📝 Sign up (အကောင့်သစ်ဖွင့်ရန်)", callback_data="auth_signup"),
+        telebot.types.InlineKeyboardButton("🔑 Log in (အကောင့်ဝင်ရန်)", callback_data="auth_login")
+    )
+    bot.send_message(user_id, "ကျေးဇူးပြု၍ အောက်ပါတို့မှ တစ်ခုကို ရွေးချယ်ပါ:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data in ["auth_signup", "auth_login"])
+def handle_auth_mode(call):
+    user_id = call.from_user.id
+    mode = "signup" if call.data == "auth_signup" else "login"
+    user_states[user_id] = {'mode': mode, 'step': 'waiting_email'}
+    
+    action_text = "အကောင့်သစ်ဖွင့်ရန်" if mode == "signup" else "အကောင့်ဝင်ရန်"
+    bot.send_message(user_id, f"{action_text} သင့်ရဲ့ Email ကို ရိုက်ထည့်ပေးပါ:")
 
 @bot.message_handler(func=lambda message: message.from_user.id in user_states)
 def handle_user_input(message):
     user_id = message.from_user.id
-    state = user_states[user_id].get('step')
+    state_data = user_states[user_id]
+    step = state_data.get('step')
     
-    if state == 'waiting_email':
-        user_states[user_id]['email'] = message.text.strip()
-        user_states[user_id]['step'] = 'waiting_password'
-        bot.send_message(user_id, "ကျေးဇူးပြု၍ Password (စကားဝှက်) အသစ်ကို ရိုက်ထည့်ပေးပါ:")
+    if step == 'waiting_email':
+        state_data['email'] = message.text.strip()
+        state_data['step'] = 'waiting_password'
+        bot.send_message(user_id, "ကျေးဇူးပြု၍ Password (စကားဝှက်) ကို ရိုက်ထည့်ပေးပါ:")
         
-    elif state == 'waiting_password':
-        user_states[user_id]['password'] = message.text.strip()
-        email = user_states[user_id]['email']
-        password = user_states[user_id]['password']
+    elif step == 'waiting_password':
+        state_data['password'] = message.text.strip()
+        email = state_data['email']
+        password = state_data['password']
+        mode = state_data['mode']
         
-        user_states[user_id]['step'] = 'confirm'
-        
-        markup = telebot.types.InlineKeyboardMarkup()
-        markup.add(
-            telebot.types.InlineKeyboardButton("Yes", callback_data="acc_yes"),
-            telebot.types.InlineKeyboardButton("No", callback_data="acc_no")
-        )
-        
-        bot.send_message(
-            user_id, 
-            f"အကောင့်အချက်အလက်များ မှန်ကန်ပါသလား?\n\nEmail: {email}\nPassword: {password}", 
-            reply_markup=markup
-        )
-        
-    elif state == 'waiting_payment_proof':
-        if message.photo:
-            user_states[user_id]['proof_received'] = True
-            bot.send_message(user_id, "ကျေးဇူးတင်ပါသည်။ Admin အတည်ပြုချက်ကို စောင့်ဆိုင်းပေးပါ။")
-            # Admin ထံသို့ စစ်ဆေးရန် ပေးပို့ခြင်း (Admin ID ထည့်ရန် လိုအပ်သည်)
-            user_states.pop(user_id, None)
+        if mode == "signup":
+            state_data['step'] = 'confirm_signup'
+            markup = telebot.types.InlineKeyboardMarkup()
+            markup.add(
+                telebot.types.InlineKeyboardButton("Yes", callback_data="signup_yes"),
+                telebot.types.InlineKeyboardButton("No", callback_data="signup_no")
+            )
+            bot.send_message(
+                user_id, 
+                f"အကောင့်အချက်အလက်များ မှန်ကန်ပါသလား?\n\nEmail: {email}\nPassword: {password}", 
+                reply_markup=markup
+            )
         else:
-            bot.send_message(user_id, "ကျေးဇူးပြု၍ ပုံ (Photo) ကို ပေးပို့ပေးပါ။")
+            # Login စစ်ဆေးခြင်း
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT password FROM users WHERE user_id = %s AND email = %s", (user_id, email))
+                row = cursor.fetchone()
+                cursor.close()
+                conn.close()
+                
+                if row and row[0] == password:
+                    bot.send_message(user_id, "✅ Log in ဝင်ရောက်ခြင်း အောင်မြင်ပါသည်။\n/buy ဟု ရိုက်၍ Mining Machine ဝယ်ယူနိုင်ပါသည်။")
+                else:
+                    bot.send_message(user_id, "❌ Email သို့မဟုတ် Password အမှားအယွင်းရှိနေပါသည်။ /start ဖြင့် ပြန်လည်ကြိုးစားပါ။")
+            except Exception as e:
+                bot.send_message(user_id, f"Error: {e}")
+            finally:
+                user_states.pop(user_id, None)
 
-@bot.callback_query_handler(func=lambda call: call.data in ["acc_yes", "acc_no"])
-def confirm_account(call):
+@bot.callback_query_handler(func=lambda call: call.data in ["signup_yes", "signup_no"])
+def confirm_signup(call):
     user_id = call.from_user.id
-    if call.data == "acc_yes":
-        if user_id not in user_states:
-            bot.send_message(user_id, "အချိန်ကုန်သွားပါပြီ။ /start ဖြင့် အစမှပြန်စပါ။")
-            return
-            
-        email = user_states[user_id].get('email')
-        password = user_states[user_id].get('password')
+    if user_id not in user_states:
+        bot.send_message(user_id, "အချိန်ကုန်သွားပါပြီ။ /start ဖြင့် အစမှပြန်စပါ။")
+        return
+        
+    if call.data == "signup_yes":
+        state_data = user_states[user_id]
+        email = state_data.get('email')
+        password = state_data.get('password')
         username = call.from_user.username or "User"
         
         try:
@@ -127,7 +148,7 @@ def confirm_account(call):
             conn.commit()
             cursor.close()
             conn.close()
-            bot.send_message(user_id, "✅ အကောင့်ဖွင့်ခြင်း အောင်မြင်ပါသည်။\nMining Machine ဝယ်ယူရန် /buy ဟု ရိုက်ပါ။")
+            bot.send_message(user_id, "✅ အကောင့်ဖွင့်ခြင်း (Sign up) အောင်မြင်ပါသည်။\nMining Machine ဝယ်ယူရန် /buy ဟု ရိုက်ပါ။")
         except Exception as e:
             bot.send_message(user_id, f"❌ အမှားအယွင်းဖြစ်ပေါ်ခဲ့သည်: {e}")
         finally:
